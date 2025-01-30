@@ -47,6 +47,50 @@ SimpleCalculatedResults AS (
                              FROM [dbo].[Data] rd2 
                              WHERE rd2.Tag NOT IN (SELECT Tag FROM ParsedParameters WHERE CalculationTag = rd.CalculationTag)) 
                 END
+
+            -- Multiplication
+WHEN sc.CalculationType = '*' THEN 
+    CASE 
+        -- MULTIPLY.NULLS: If any value is NULL, result should be NULL
+        WHEN CHARINDEX('MULTIPLY.NULLS', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN NULL
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+
+        -- MULTIPLY.ZEROES: If any value is 0, result should be 0
+        WHEN CHARINDEX('MULTIPLY.ZEROES', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN 0
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+
+        -- MULTIPLY.NONZEROES: Ignore NULLs, treat missing values as 1
+        WHEN CHARINDEX('MULTIPLY.NONZEROES', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN 1
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+    END
+
+-- Division
+WHEN sc.CalculationType = '/' THEN 
+    CASE 
+        -- DIVIDE.NULLS: If any value is NULL, result should be NULL
+        WHEN CHARINDEX('DIVIDE.NULLS', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN NULL
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+
+        -- DIVIDE.UNDEFINED.NULLS: If any value is NULL or denominator is 0, return NULL
+        WHEN CHARINDEX('DIVIDE.UNDEFINED.NULLS', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 
+                      OR COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN NULL
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+
+        -- DIVIDE.NOTNULLS: Ignore NULLs, but if denominator is 0, return NULL
+        WHEN CHARINDEX('DIVIDE.NOTNULLS', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN NULL
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+
+        -- DIVIDE.CHAINED.ZEROES: If any denominator in the chain is 0, return 0
+        WHEN CHARINDEX('DIVIDE.CHAINED.ZEROES', rd.CalculationTag) > 0 THEN 
+            CASE WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN 0
+                 ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
+    END
         END AS CalculatedValue
     FROM RetrievedData rd
 		INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag
@@ -54,39 +98,5 @@ SimpleCalculatedResults AS (
 )
 SELECT * 
 FROM SimpleCalculatedResults;
-
-
-
-			---- Multiplication
-			--WHEN sc.CalculationType = '*' THEN 
-			--	CASE 
-			--		WHEN CHARINDEX('MULTIPLY.NULLS', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN NULL
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--		WHEN CHARINDEX('MULTIPLY.ZEROES', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN 0
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--		WHEN CHARINDEX('MULTIPLY.NONZEROES', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN 1
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--	END
-
-			---- Division
-			--WHEN sc.CalculationType = '/' THEN 
-			--	CASE 
-			--		WHEN CHARINDEX('DIVIDE.NULLS', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN NULL
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--		WHEN CHARINDEX('DIVIDE.UNDEFINED.NULLS', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 OR COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN NULL
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--		WHEN CHARINDEX('DIVIDE.NOTNULLS', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value IS NULL THEN 1 END) > 0 THEN 1
-			--					WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN NULL
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--		WHEN CHARINDEX('DIVIDE.CHAINED.ZEROES', rd.CalculationTag) > 0 THEN 
-			--			CASE WHEN COUNT(CASE WHEN rd.Value = 0 THEN 1 END) > 0 THEN 0
-			--					ELSE EXP(SUM(LOG(NULLIF(rd.Value, 0)))) END
-			--	END
 
 
