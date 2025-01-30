@@ -1,6 +1,4 @@
---CREATE PROCEDURE ProcessCalculatedTags_CTE
---AS
---BEGIN
+-- THIS IS NOT WORKING PROPERLY
 WITH StandardCalculations AS (
     SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
     FROM [dbo].[Tags]
