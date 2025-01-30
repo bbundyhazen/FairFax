@@ -1,4 +1,4 @@
--- Step 1: Create a temporary table to store the intermediate CTE result
+-- Create a temporary table to store the intermediate CTE result
 CREATE TABLE #IntermediateData (
     CalculationTag NVARCHAR(255),
     CalculationType NVARCHAR(10),
@@ -6,7 +6,7 @@ CREATE TABLE #IntermediateData (
     Tag NVARCHAR(255)
 );
 
--- Step 2: Execute CTEs and store the result in #IntermediateData
+-- Parse the calculation parameters into there own columns and connect the parameters to the data
 WITH StandardCalculations AS (
     SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
     FROM [dbo].[Tags]
@@ -29,13 +29,13 @@ SELECT rd.CalculationTag, sc.CalculationType, rd.Value, rd.Tag
 FROM RetrievedData rd
 INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag;
 
--- Step 3: Create another temporary table for results
+-- table to store results
 CREATE TABLE #Results (
     CalculationTag NVARCHAR(255),
     CalculatedValue FLOAT
 );
 
--- Step 4: Declare variables for calculations
+-- Variables for calculations
 DECLARE @CalculationTag NVARCHAR(255);
 DECLARE @CalculationType NVARCHAR(10);
 DECLARE @Sum FLOAT;
@@ -70,7 +70,7 @@ BEGIN
                 INSERT INTO #Results VALUES (@CalculationTag, NULL)
             ELSE
             BEGIN
-                SELECT @Sum += ISNULL(Value, 0) 
+                SELECT @Sum += Value 
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag;
                 INSERT INTO #Results VALUES (@CalculationTag, @Sum);
@@ -98,7 +98,7 @@ BEGIN
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag 
                 ORDER BY Tag ASC;
-                SELECT @Difference -= ISNULL(Value, 0)
+                SELECT @Difference -= Value
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag 
                 AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
@@ -128,31 +128,31 @@ BEGIN
                 INSERT INTO #Results VALUES (@CalculationTag, NULL)
             ELSE
             BEGIN
-                SELECT @Product *= ISNULL(Value, 1) 
+                SELECT @Product *= Value 
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag;
                 INSERT INTO #Results VALUES (@CalculationTag, @Product);
             END
         END
-        ELSE IF @CalculationTag LIKE '%MULTIPLY.ZEROES%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value = 0)
-                INSERT INTO #Results VALUES (@CalculationTag, 0)
-            ELSE
-            BEGIN
-                SELECT @Product *= ISNULL(Value, 1) 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag;
-                INSERT INTO #Results VALUES (@CalculationTag, @Product);
-            END
-        END
-        ELSE IF @CalculationTag LIKE '%MULTIPLY.NONZEROES%'
-        BEGIN
-            SELECT @Product *= ISNULL(Value, 1) 
-            FROM #IntermediateData 
-            WHERE CalculationTag = @CalculationTag;
-            INSERT INTO #Results VALUES (@CalculationTag, @Product);
-        END
+        -- ELSE IF @CalculationTag LIKE '%MULTIPLY.ZEROES%'
+        -- BEGIN
+        --     IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value = 0)
+        --         INSERT INTO #Results VALUES (@CalculationTag, 0)
+        --     ELSE
+        --     BEGIN
+        --         SELECT @Product *= ISNULL(Value, 1) 
+        --         FROM #IntermediateData 
+        --         WHERE CalculationTag = @CalculationTag;
+        --         INSERT INTO #Results VALUES (@CalculationTag, @Product);
+        --     END
+        -- END
+        -- ELSE IF @CalculationTag LIKE '%MULTIPLY.NONZEROES%'
+        -- BEGIN
+        --     SELECT @Product *= ISNULL(Value, 1) 
+        --     FROM #IntermediateData 
+        --     WHERE CalculationTag = @CalculationTag;
+        --     INSERT INTO #Results VALUES (@CalculationTag, @Product);
+        -- END
     END
 
     -- Division Handling
@@ -163,12 +163,13 @@ BEGIN
             IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL)
                 INSERT INTO #Results VALUES (@CalculationTag, NULL)
             ELSE
-            BEGIN
+            -- change so that it is using the /=
+            BEGIN 
                 SELECT TOP 1 @Numerator = Value 
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag 
                 ORDER BY Tag ASC;
-                SELECT @Denominator *= ISNULL(Value, 1) 
+                SELECT @Denominator *= Value 
                 FROM #IntermediateData 
                 WHERE CalculationTag = @CalculationTag 
                 AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
