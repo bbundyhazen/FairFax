@@ -1,226 +1,199 @@
--- Create a temporary table to store the intermediate CTE result
-CREATE TABLE #IntermediateData (
-    CalculationTag NVARCHAR(255),
-    CalculationType NVARCHAR(10),
-    Value FLOAT,
-    Tag NVARCHAR(255)
-);
+---- With Dates
+--CREATE PROCEDURE SimpleCalculation
+--AS
+--BEGIN
+    SET NOCOUNT ON;
 
--- Parse the calculation parameters into there own columns and connect the parameters to the data
-WITH StandardCalculations AS (
-    SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
-    FROM [dbo].[Tags]
-    WHERE [Tag Class] = 'Calc'
-        AND [Custom Calculation] IS NULL
-),
-ParsedParameters AS (
-    SELECT sc.Tag AS CalculationTag, TRIM(value) AS Tag
-    FROM StandardCalculations sc
-    CROSS APPLY STRING_SPLIT(sc.Parameters, ',')
-),
-RetrievedData AS (
-    SELECT pp.CalculationTag, pp.Tag, d.Value
-    FROM ParsedParameters pp
-    INNER JOIN [dbo].[Data] d ON pp.Tag = d.Tag
-    WHERE d.DateTime = '2024-01-01'
-)
-INSERT INTO #IntermediateData (CalculationTag, CalculationType, Value, Tag)
-SELECT rd.CalculationTag, sc.CalculationType, rd.Value, rd.Tag
-FROM RetrievedData rd
-INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag;
+    -- Temporary table for logging
+    CREATE TABLE #DebugLog (
+        CalculationTag NVARCHAR(255),
+        CalculationType NVARCHAR(10),
+        Step NVARCHAR(255),
+        Value FLOAT,
+        DateTime DATETIME
+    );
 
--- table to store results
-CREATE TABLE #Results (
-    CalculationTag NVARCHAR(255),
-    CalculatedValue FLOAT
-);
+    -- Temporary table to store intermediate data
+	CREATE TABLE #IntermediateData (
+		CalculationTag NVARCHAR(255),
+		CalculationType NVARCHAR(10),
+		Value FLOAT,
+		Tag NVARCHAR(255),
+		DateTime DATETIME,
+		ParameterOrder INT
+	);
 
--- Variables for calculations
-DECLARE @CalculationTag NVARCHAR(255);
-DECLARE @CalculationType NVARCHAR(10);
-DECLARE @Sum FLOAT;
-DECLARE @Difference FLOAT;
-DECLARE @Product FLOAT;
-DECLARE @Numerator FLOAT;
-DECLARE @Denominator FLOAT;
-DECLARE @NegativeCount INT;
 
-DECLARE CalculationCursor CURSOR FOR
-SELECT DISTINCT CalculationTag, CalculationType FROM #IntermediateData;
+    -- Parse calculation parameters and join with data
+	WITH StandardCalculations AS (
+		SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
+		FROM [dbo].[Tags]
+		WHERE [Tag Class] = 'Calc'
+			AND [Custom Calculation] IS NULL
+	),
+	ParsedParameters AS (
+		SELECT 
+			sc.Tag AS CalculationTag, 
+			TRIM(value) AS Tag,
+			ROW_NUMBER() OVER (PARTITION BY sc.Tag ORDER BY (SELECT NULL)) AS ParameterOrder
+		FROM StandardCalculations sc
+		CROSS APPLY STRING_SPLIT(sc.Parameters, ',')
+	),
+	RetrievedData AS (
+		SELECT pp.CalculationTag, pp.Tag, d.Value, d.DateTime, pp.ParameterOrder
+		FROM ParsedParameters pp
+		INNER JOIN [dbo].[Data] d ON pp.Tag = d.Tag
+	)
+	INSERT INTO #IntermediateData (CalculationTag, CalculationType, Value, Tag, DateTime, ParameterOrder)
+	SELECT rd.CalculationTag, sc.CalculationType, rd.Value, rd.Tag, rd.DateTime, rd.ParameterOrder
+	FROM RetrievedData rd
+	INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag;
 
-OPEN CalculationCursor;
-FETCH NEXT FROM CalculationCursor INTO @CalculationTag, @CalculationType;
 
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    -- Reset variables
-    SET @Sum = 0;
-    SET @Difference = NULL;
-    SET @Product = 1;
-    SET @Numerator = NULL;
-    SET @Denominator = 1;
-    SET @NegativeCount = 0;
+    -- Table to store results
+    CREATE TABLE #Results (
+        CalculationTag NVARCHAR(255),
+        CalculatedValue FLOAT,
+        DateTime DATETIME
+    );
 
-    -- Addition Handling
-    IF @CalculationType = '+'
+    DECLARE @CalculationTag NVARCHAR(255);
+    DECLARE @CalculationType NVARCHAR(10);
+    DECLARE @CurrentDateTime DATETIME;
+    DECLARE @Sum FLOAT;
+    DECLARE @Difference FLOAT;
+    DECLARE @Product FLOAT;
+    DECLARE @Numerator FLOAT;
+    DECLARE @Denominator FLOAT;
+    DECLARE @HasZeroOrNull BIT;
+
+    DECLARE CalculationCursor CURSOR FOR
+    SELECT DISTINCT CalculationTag, CalculationType, DateTime FROM #IntermediateData;
+
+    OPEN CalculationCursor;
+    FETCH NEXT FROM CalculationCursor INTO @CalculationTag, @CalculationType, @CurrentDateTime;
+
+    WHILE @@FETCH_STATUS = 0
     BEGIN
-        IF @CalculationTag LIKE '%ADD.NULLS%'
+        -- Reset variables
+        SET @Sum = 0;
+        SET @Difference = 0;
+        SET @Product = 1;
+        SET @Numerator = 0;
+        SET @Denominator = 1;
+        SET @HasZeroOrNull = 0;
+
+        IF @CalculationType = '+'
         BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL)
-                INSERT INTO #Results VALUES (@CalculationTag, NULL)
+            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL AND DateTime = @CurrentDateTime)
+                INSERT INTO #Results VALUES (@CalculationTag, NULL, @CurrentDateTime);
             ELSE
             BEGIN
                 SELECT @Sum += Value 
                 FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag;
-                INSERT INTO #Results VALUES (@CalculationTag, @Sum);
+                WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime;
+                INSERT INTO #Results VALUES (@CalculationTag, @Sum, @CurrentDateTime);
             END
         END
-        ELSE IF @CalculationTag LIKE '%ADD.NOTNULLS%'
+        ELSE IF @CalculationType = '-'
         BEGIN
-            SELECT @Sum += ISNULL(Value, 0) 
-            FROM #IntermediateData 
-            WHERE CalculationTag = @CalculationTag;
-            INSERT INTO #Results VALUES (@CalculationTag, @Sum);
-        END
-    END
-
-    -- Subtraction Handling
-    ELSE IF @CalculationType = '-'
-    BEGIN
-        IF @CalculationTag LIKE '%SUBTRACT.NULLS%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL)
-                INSERT INTO #Results VALUES (@CalculationTag, NULL)
+            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL AND DateTime = @CurrentDateTime)
+                INSERT INTO #Results VALUES (@CalculationTag, NULL, @CurrentDateTime);
             ELSE
             BEGIN
-                SELECT TOP 1 @Difference = Value 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                ORDER BY Tag ASC;
-                SELECT @Difference -= Value
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
-                INSERT INTO #Results VALUES (@CalculationTag, @Difference);
+                -- Get the first value
+				-- Get the first value as the initial Difference
+				SELECT TOP 1 @Difference = Value
+				FROM #IntermediateData
+				WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime
+				ORDER BY ParameterOrder ASC;  -- Ensures correct starting value
+
+                INSERT INTO #DebugLog VALUES (@CalculationTag, '-', 'Initial Value', @Difference, @CurrentDateTime);
+
+				SELECT @Difference -= Value 
+				FROM #IntermediateData
+				WHERE CalculationTag = @CalculationTag 
+				AND DateTime = @CurrentDateTime
+				AND ParameterOrder > 1  -- Ensures only subsequent values are subtracted
+				ORDER BY ParameterOrder ASC;  -- Ensures correct processing order
+
+				-- Store the result
+				INSERT INTO #Results VALUES (@CalculationTag, @Difference, @CurrentDateTime);
             END
         END
-        ELSE IF @CalculationTag LIKE '%SUBTRACT.NOTNULLS%'
+        ELSE IF @CalculationType = '*'
         BEGIN
-            SELECT TOP 1 @Difference = Value 
-            FROM #IntermediateData 
-            WHERE CalculationTag = @CalculationTag 
-            ORDER BY Tag ASC;
-            SELECT @Difference -= ISNULL(Value, 0)
-            FROM #IntermediateData 
-            WHERE CalculationTag = @CalculationTag 
-            AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
-            INSERT INTO #Results VALUES (@CalculationTag, @Difference);
-        END
-    END
-
-    -- Multiplication Handling
-    ELSE IF @CalculationType = '*'
-    BEGIN
-        IF @CalculationTag LIKE '%MULTIPLY.NULLS%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL)
-                INSERT INTO #Results VALUES (@CalculationTag, NULL)
+            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL AND DateTime = @CurrentDateTime)
+                INSERT INTO #Results VALUES (@CalculationTag, NULL, @CurrentDateTime);
             ELSE
             BEGIN
                 SELECT @Product *= Value 
                 FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag;
-                INSERT INTO #Results VALUES (@CalculationTag, @Product);
+                WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime;
+                INSERT INTO #Results VALUES (@CalculationTag, @Product, @CurrentDateTime);
             END
         END
-        -- ELSE IF @CalculationTag LIKE '%MULTIPLY.ZEROES%'
-        -- BEGIN
-        --     IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value = 0)
-        --         INSERT INTO #Results VALUES (@CalculationTag, 0)
-        --     ELSE
-        --     BEGIN
-        --         SELECT @Product *= ISNULL(Value, 1) 
-        --         FROM #IntermediateData 
-        --         WHERE CalculationTag = @CalculationTag;
-        --         INSERT INTO #Results VALUES (@CalculationTag, @Product);
-        --     END
-        -- END
-        -- ELSE IF @CalculationTag LIKE '%MULTIPLY.NONZEROES%'
-        -- BEGIN
-        --     SELECT @Product *= ISNULL(Value, 1) 
-        --     FROM #IntermediateData 
-        --     WHERE CalculationTag = @CalculationTag;
-        --     INSERT INTO #Results VALUES (@CalculationTag, @Product);
-        -- END
-    END
+        ELSE IF @CalculationType = '/'
+        BEGIN
+			-- Get the first value as the numerator
+			SELECT TOP 1 @Numerator = Value 
+			FROM #IntermediateData 
+			WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime 
+			ORDER BY ParameterOrder ASC; -- Ensures the first value is used as the numerator
 
-    -- Division Handling
-    ELSE IF @CalculationType = '/'
-    BEGIN
-        IF @CalculationTag LIKE '%DIVIDE.NULLS%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL)
-                INSERT INTO #Results VALUES (@CalculationTag, NULL)
-            ELSE
-            -- change so that it is using the /=
-            BEGIN 
-                SELECT TOP 1 @Numerator = Value 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                ORDER BY Tag ASC;
-                SELECT @Denominator *= Value 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
-                INSERT INTO #Results VALUES (@CalculationTag, @Numerator / NULLIF(@Denominator, 0));
-            END
-        END
-        ELSE IF @CalculationTag LIKE '%DIVIDE.UNDEFINED.NULLS%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND (Value IS NULL OR Value = 0))
-                INSERT INTO #Results VALUES (@CalculationTag, NULL)
+            INSERT INTO #DebugLog VALUES (@CalculationTag, '/', 'Numerator', @Numerator, @CurrentDateTime);
+
+            -- Check if any denominator value is NULL or 0
+			SELECT @HasZeroOrNull = CASE 
+				WHEN EXISTS (
+					SELECT 1 
+					FROM #IntermediateData 
+					WHERE CalculationTag = @CalculationTag 
+					AND DateTime = @CurrentDateTime 
+					AND ParameterOrder > 1  -- Only check denominators
+					AND (Value IS NULL OR Value = 0)
+				) THEN 1 
+				ELSE 0 
+			END;
+
+			-- If the numerator is 0, the result is 0
+			IF @Numerator = 0 AND @HasZeroOrNull <> 1
+				INSERT INTO #Results VALUES (@CalculationTag, 0, @CurrentDateTime);
+
+			-- If any denominator is 0 or NULL, result is NULL (avoid division by zero)
+			ELSE IF @HasZeroOrNull = 1
+				INSERT INTO #Results VALUES (@CalculationTag, NULL, @CurrentDateTime);
             ELSE
             BEGIN
-                SELECT TOP 1 @Numerator = Value 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                ORDER BY Tag ASC;
-                SELECT @Denominator *= ISNULL(Value, 1) 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
-                INSERT INTO #Results VALUES (@CalculationTag, @Numerator / NULLIF(@Denominator, 0));
+				-- Multiply all denominator values in the correct order
+				SELECT @Denominator *= Value
+				FROM #IntermediateData 
+				WHERE CalculationTag = @CalculationTag 
+				AND DateTime = @CurrentDateTime 
+				AND ParameterOrder > 1  -- Ensures only denominators are multiplied
+				ORDER BY ParameterOrder ASC; -- Ensures correct order of multiplication
+
+				INSERT INTO #Results VALUES (@CalculationTag, @Numerator / @Denominator, @CurrentDateTime);
             END
         END
-        ELSE IF @CalculationTag LIKE '%DIVIDE.CHAINED.ZEROES%'
-        BEGIN
-            IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value = 0)
-                INSERT INTO #Results VALUES (@CalculationTag, 0)
-            ELSE
-            BEGIN
-                SELECT TOP 1 @Numerator = Value 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                ORDER BY Tag ASC;
-                SELECT @Denominator *= ISNULL(Value, 1) 
-                FROM #IntermediateData 
-                WHERE CalculationTag = @CalculationTag 
-                AND Tag <> (SELECT TOP 1 Tag FROM #IntermediateData WHERE CalculationTag = @CalculationTag ORDER BY Tag ASC);
-                INSERT INTO #Results VALUES (@CalculationTag, @Numerator / NULLIF(@Denominator, 0));
-            END
-        END
+
+        FETCH NEXT FROM CalculationCursor INTO @CalculationTag, @CalculationType, @CurrentDateTime;
     END
 
-    FETCH NEXT FROM CalculationCursor INTO @CalculationTag, @CalculationType;
-END
+    CLOSE CalculationCursor;
+    DEALLOCATE CalculationCursor;
 
-CLOSE CalculationCursor;
-DEALLOCATE CalculationCursor;
+    -- Insert results into CalcData table
+    --INSERT INTO CalcData (Tag, DateTime, Value)
+    --SELECT CalculationTag, DateTime, CalculatedValue FROM #Results;
+    SELECT * FROM #Results
+    WHERE DateTime = '2024-01-01';
 
--- Return the calculated results
-SELECT * FROM #Results;
+	-- Retrieve Debugging Information
+	SELECT * FROM #DebugLog WHERE DateTime = '2024-01-01';
 
--- Clean up
-DROP TABLE #IntermediateData;
-DROP TABLE #Results;
+    -- Cleanup
+    DROP TABLE #IntermediateData;
+    DROP TABLE #Results;
+	Drop TABLE #DebugLog
+--END;
