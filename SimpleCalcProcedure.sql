@@ -1,4 +1,4 @@
----- With Dates
+---- With Dates (Make sure only one of each value is counted-- if two then only count one)
 CREATE PROCEDURE SimpleCalculation
 AS
 BEGIN
