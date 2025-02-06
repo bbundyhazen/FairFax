@@ -1,4 +1,7 @@
----- With Dates (Make sure only one of each value is counted-- if two then only count one)
+---- With Dates 
+--- If not record for the date, then make sure a null value is added for that date and field
+--- sum, difference, product (ignore nulls when this is chosen as the type)
+    --- build test cases. also some with missing dates)
 CREATE PROCEDURE SimpleCalculation
 AS
 BEGIN
@@ -15,29 +18,74 @@ BEGIN
 	);
 
     -- Parse calculation parameters and join with data
-	WITH StandardCalculations AS (
-		SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
-		FROM [dbo].[Tags]
-		WHERE [Tag Class] = 'Calc'
-			AND [Custom Calculation] IS NULL
-	),
-	ParsedParameters AS (
-		SELECT 
-			sc.Tag AS CalculationTag, 
-			TRIM(value) AS Tag,
-			ROW_NUMBER() OVER (PARTITION BY sc.Tag ORDER BY (SELECT NULL)) AS ParameterOrder
-		FROM StandardCalculations sc
-		CROSS APPLY STRING_SPLIT(sc.Parameters, ',')
-	),
-	RetrievedData AS (
-		SELECT pp.CalculationTag, pp.Tag, d.Value, d.DateTime, pp.ParameterOrder
-		FROM ParsedParameters pp
-		INNER JOIN [dbo].[Data] d ON pp.Tag = d.Tag
-	)
-	INSERT INTO #IntermediateData (CalculationTag, CalculationType, Value, Tag, DateTime, ParameterOrder)
-	SELECT rd.CalculationTag, sc.CalculationType, rd.Value, rd.Tag, rd.DateTime, rd.ParameterOrder
-	FROM RetrievedData rd
-	INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag;
+    WITH StandardCalculations AS (
+        SELECT [Tag], [Calculation Type] AS CalculationType, [Calculation Parameters Tag] AS Parameters
+        FROM [dbo].[Tags]
+        WHERE [Tag Class] = 'Calc'
+            AND [Custom Calculation] IS NULL
+    ),
+    ParsedParameters AS (
+        SELECT 
+            sc.Tag AS CalculationTag, 
+            TRIM(value) AS Tag,
+            ROW_NUMBER() OVER (PARTITION BY sc.Tag ORDER BY (SELECT NULL)) AS ParameterOrder
+        FROM StandardCalculations sc
+        CROSS APPLY STRING_SPLIT(sc.Parameters, ',')
+    ),
+    RetrievedData AS (
+        SELECT 
+            pp.CalculationTag, 
+            pp.Tag, 
+            d.Value, 
+            CAST(d.DateTime AS DATE) AS DateTime, 
+            pp.ParameterOrder
+        FROM ParsedParameters pp
+        INNER JOIN [dbo].[Data] d 
+            ON pp.Tag = d.Tag
+    ),
+    -- Generate unique CalculationTag and DateTime pairs
+    CalcDates AS (
+        SELECT DISTINCT CalculationTag, DateTime
+        FROM RetrievedData
+    ),
+    -- Use INNER JOIN instead of CROSS JOIN to generate expanded data
+    ExpandedData AS (
+        SELECT
+            rd.CalculationTag AS CalculationTag,
+            rd.Tag AS Tag,
+            CASE 
+                WHEN rd.DateTime <> d.DateTime THEN NULL 
+                ELSE rd.Value 
+            END AS Value,
+            d.DateTime AS DateTime,
+            rd.ParameterOrder
+        FROM RetrievedData rd
+            INNER JOIN CalcDates d ON rd.CalculationTag = d.CalculationTag
+    ),
+    RankedData AS (
+        SELECT
+            CalculationTag,
+            Tag,
+            Value,
+            DateTime,
+            ParameterOrder,
+            ROW_NUMBER() OVER (PARTITION BY CalculationTag, Tag, DateTime ORDER BY Value DESC) AS Valid
+        FROM ExpandedData
+    ),
+    FinalData as (
+        SELECT 
+            sc.CalculationType,
+            rd.CalculationTag, 
+            rd.Value,
+            rd.Tag, 
+            rd.DateTime, 
+            rd.ParameterOrder
+        FROM RankedData rd
+                INNER JOIN StandardCalculations sc ON rd.CalculationTag = sc.Tag
+        WHERE Valid = 1
+    )
+    INSERT INTO #IntermediateData (CalculationTag, CalculationType, Value, Tag, DateTime, ParameterOrder)
+    SELECT * FROM FinalData;
 
 
     -- Table to store results
@@ -85,6 +133,13 @@ BEGIN
                 INSERT INTO #Results VALUES (@CalculationTag, @Sum, @CurrentDateTime);
             END
         END
+        ELSE IF @CalculationType = 'Sum'
+        BEGIN
+            SELECT @Sum += COALESCE(Value, 0)
+            FROM #IntermediateData 
+            WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime;
+            INSERT INTO #Results VALUES (@CalculationTag, @Sum, @CurrentDateTime);
+        END
         ELSE IF @CalculationType = '-'
         BEGIN
             IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL AND DateTime = @CurrentDateTime)
@@ -109,6 +164,24 @@ BEGIN
 				INSERT INTO #Results VALUES (@CalculationTag, @Difference, @CurrentDateTime);
             END
         END
+        ELSE IF @CalculationType = 'Difference'
+        BEGIN
+            -- Get the first value as the initial Difference
+            SELECT TOP 1 @Difference = COALESCE(Value, 0)
+            FROM #IntermediateData
+            WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime
+            ORDER BY ParameterOrder ASC;
+
+            -- finishing rest of the division
+            SELECT @Difference -= COALESCE(Value, 0)
+            FROM #IntermediateData
+            WHERE CalculationTag = @CalculationTag 
+            AND DateTime = @CurrentDateTime
+            AND ParameterOrder > 1 
+            ORDER BY ParameterOrder ASC; 
+
+            INSERT INTO #Results VALUES (@CalculationTag, @Difference, @CurrentDateTime);
+        END
         ELSE IF @CalculationType = '*'
         BEGIN
             IF EXISTS (SELECT 1 FROM #IntermediateData WHERE CalculationTag = @CalculationTag AND Value IS NULL AND DateTime = @CurrentDateTime)
@@ -120,6 +193,13 @@ BEGIN
                 WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime;
                 INSERT INTO #Results VALUES (@CalculationTag, @Product, @CurrentDateTime);
             END
+        END
+        ELSE IF @CalculationType = 'Product'
+        BEGIN
+            SELECT @Product *= COALESCE(Value, 1)
+            FROM #IntermediateData 
+            WHERE CalculationTag = @CalculationTag AND DateTime = @CurrentDateTime;
+            INSERT INTO #Results VALUES (@CalculationTag, @Product, @CurrentDateTime);
         END
         ELSE IF @CalculationType = '/'
         BEGIN
