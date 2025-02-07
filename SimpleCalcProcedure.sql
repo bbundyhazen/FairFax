@@ -10,7 +10,7 @@ BEGIN
     -- Temporary table to store intermediate data
 	CREATE TABLE #IntermediateData (
 		CalculationTag NVARCHAR(255),
-		CalculationType NVARCHAR(10),
+		CalculationType NVARCHAR(30),
 		Value FLOAT,
 		Tag NVARCHAR(255),
 		DateTime DATETIME,
@@ -73,9 +73,9 @@ BEGIN
         FROM ExpandedData
     ),
     FinalData as (
-        SELECT 
-            sc.CalculationType,
+        SELECT  
             rd.CalculationTag, 
+			sc.CalculationType,
             rd.Value,
             rd.Tag, 
             rd.DateTime, 
@@ -252,6 +252,8 @@ BEGIN
     -- Insert results into CalcData table
 	INSERT INTO CalcData (Tag, DateTime, Value)
 	SELECT CalculationTag, DateTime, CalculatedValue FROM #Results;
+	Select * from #IntermediateData;
+	Select * from #Results;
 
     -- Cleanup
     DROP TABLE #IntermediateData;
