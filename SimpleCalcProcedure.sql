@@ -252,8 +252,6 @@ BEGIN
     -- Insert results into CalcData table
 	INSERT INTO CalcData (Tag, DateTime, Value)
 	SELECT CalculationTag, DateTime, CalculatedValue FROM #Results;
-	Select * from #IntermediateData;
-	Select * from #Results;
 
     -- Cleanup
     DROP TABLE #IntermediateData;
